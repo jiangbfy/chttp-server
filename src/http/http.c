@@ -7,8 +7,6 @@ static char* GetLine(char *line, char *end)
     char *pbuf = strstr(line, "\r\n");
     if(pbuf == NULL)
         return NULL;
-    pbuf[0] = 0;
-    pbuf[1] = 0;
     return pbuf;
 }
 //解析http请求
@@ -32,7 +30,7 @@ static void ParseReq(struct Http *this, char *head, char *end)
     {
         LOG_INFO("METHOD: OPTION");
         this->m_method = METHOD_OPTION;
-        this->m_line_state = LINE_ERROR;
+        this->m_line_state = LINE_OPTION;
         pbuf += 7;
         this->m_url = pbuf;
     }
@@ -58,6 +56,7 @@ static void ParseReq(struct Http *this, char *head, char *end)
 static void ProcessRequest(struct Http *this, char *request, int reqLen)
 {
     request[reqLen] = 0;
+    this->m_line_state = LINE_OK;
     char *msgEnd = request + reqLen;
     char *reqEnd = GetLine(request, msgEnd);
     if(reqEnd == NULL)
@@ -65,8 +64,10 @@ static void ProcessRequest(struct Http *this, char *request, int reqLen)
         this->m_line_state = LINE_ERROR;
         return;
     }
+    *reqEnd = 0;
     ParseReq(this, request, reqEnd);
     char *head = reqEnd + 2;
+    this->m_head = head;
     char *headEnd = NULL;
     int headLen = 1;
     while(headLen > 0)
@@ -80,32 +81,32 @@ static void ProcessRequest(struct Http *this, char *request, int reqLen)
         }
         head = headEnd + 2;
     }
+    *(head - 4) = 0;
     this->m_body = head;
-    if(this->m_line_state == LINE_OK) this->m_line_state = LINE_FIN;
     LOG_INFO("URL: %s", this->m_url);
     int bodyLen = reqLen - (this->m_body - request);
     if(bodyLen < LOG_LEN) LOG_INFO("BODY: %s", this->m_body);
 }
 
-static void ProcessResponse(struct Http *this, char *response)
+static void ProcessResponse(struct Http *this, char *response, char *head)
 {
-    char *pbuf = response;
+    char *pbuf = head;
     int len = 0;
 
-    if(this->m_line_state != LINE_FIN)
+    if(this->m_line_state != LINE_OK)
     {
-        len = -1;
-        response[RES_BODY] = 0;
+        response[0] = 0;
     }
     else
     {
-        len = ControllerParse(&response[RES_BODY], this);
-        if(len < LOG_LEN) LOG_INFO("Response: %s", &response[RES_BODY]);
+        len = ControllerParse(&response[0], this);
+        if(len < LOG_LEN) LOG_INFO("Response: %s", &response[0]);
     }
 
-    if(len < 0)
+    if(this->m_ws != WS_NULL) return;
+
+    if(this->m_line_state != LINE_OK)
     {
-        len = 0;
         if(this->m_method == METHOD_OPTION)
         {
             //OPTION方法处理

@@ -16,8 +16,8 @@
 
 // TCP发送和接收缓冲数组大小
 #define BUF_LEN 2048
-// iovec结构体数量，用于发送和接收文件
-#define IOVEC_LEN 8
+// HTTP头
+#define BUF_HEAD 1024
 
 typedef struct Tcp
 {
@@ -33,14 +33,14 @@ typedef struct Tcp
     int m_expire;
     // TCP客户端ip地址和端口
     struct sockaddr_in m_address;
+    // 是否为websocket协议
+    WS_TYPE m_ws;
     // 接收缓冲数组
     char m_rxBuf[BUF_LEN];
     // 发送缓冲数组
     char m_txBuf[BUF_LEN];
-    // 接收文件
-    struct iovec m_rxiov[IOVEC_LEN];
-    // 发送文件
-    struct iovec m_txiov[IOVEC_LEN];
+    // 发送缓冲数组
+    char m_txHead[BUF_HEAD];
 
     // TCP结构体配置 (epoll套接字, TCP 套接字, 客户端ip地址和端口, TCP连接保持时间)
     void (*Config)(struct Tcp *this, int epollfd, int sockfd, struct sockaddr_in *addr, int expire);
@@ -54,5 +54,6 @@ typedef struct Tcp
 
 Tcp* TcpInit(void);
 void TcpRelease(Tcp* this);
+void modfd(int epollfd, int fd, int ev, int one_shot, int trigMode);
 
 #endif

@@ -1,6 +1,7 @@
 #include "webserver.h"
 #include "syspara.h"
 #include "log.h"
+#include "http.h"
 
 static void Config(struct WebServer *this, int port, char *user, char *pwd, char *dbName, int taskNum)
 {
@@ -12,8 +13,6 @@ static void Config(struct WebServer *this, int port, char *user, char *pwd, char
     this->m_dbName = malloc(strlen(dbName) + 1);
     strcpy(this->m_dbName, dbName);
     this->m_taskNum = taskNum;
-
-    SetDBPath(dbName);
 }
 
 //对文件描述符设置非阻塞
@@ -75,17 +74,87 @@ static int StackPop(void)
     return server->m_stack[server->m_stackSize];
 }
 //tcp连接超时检查
-static void ExpireCheck(TreeNode* node) {
+static void ExpireCheck(TreeNode* node, WsList *temp) {
     if (node != NULL) {
-        ExpireCheck(node->left);
+        ExpireCheck(node->left, temp);
         Tcp *conn = (Tcp *)node->data;
         conn->m_expire -= TIMEOUT;
         if(conn->m_expire < 0)
         {
             StackPush(node->id);
         }
-        ExpireCheck(node->right);
+        else
+        {
+            if(conn->m_ws == WS_NORMAL)
+            {
+                if(temp != NULL)
+                {
+                    conn->m_txBuf[0] = 0x81;
+                    if(temp->len < 126)
+                    {
+                        conn->m_txBuf[1] = temp->len;
+                        strcpy(&conn->m_txBuf[2], temp->msg);
+                        LOG_INFO("TxSocket: %s", &conn->m_txBuf[2]);
+                    }
+                    else if(temp->len >= 126 && temp->len < (BUF_LEN - 4))
+                    {
+                        conn->m_txBuf[1] = 126;
+                        conn->m_txBuf[2] = (temp->len >> 8);
+                        conn->m_txBuf[3] = temp->len;
+                        strcpy(&conn->m_txBuf[4], temp->msg);
+                        if(temp->len < LOG_LEN) LOG_INFO("TxSocket: %s", &conn->m_txBuf[4]);
+                    }
+                    modfd(conn->m_epollfd, conn->m_sockfd, EPOLLOUT, true, 0);
+                }
+            }
+        }
+        ExpireCheck(node->right, temp);
     }
+
+}
+
+static void PushMsg(struct WebServer *this, char *msg, uint16_t len)
+{
+    WsList *temp = malloc(sizeof(WsList));
+    temp->msg = malloc(len + 1);
+    strcpy(temp->msg, msg);
+    temp->len = len;
+
+    pthread_mutex_lock(&this->m_mutex);
+    this->m_wsSize++;
+    if(this->m_frist == NULL){
+        this->m_frist = temp;
+        this->m_end = temp;
+    }
+    else{
+        this->m_end->next = temp;
+        this->m_end = temp;
+    }
+    pthread_mutex_unlock(&this->m_mutex);
+    alarm(1);
+}
+
+static WsList* PopMsg(struct WebServer *this)
+{
+    WsList *temp = NULL;
+    if(this->m_wsSize > 1)
+    {
+        pthread_mutex_lock(&this->m_mutex);
+        temp = this->m_frist;
+        this->m_frist = this->m_frist->next;
+        this->m_wsSize--;
+        pthread_mutex_unlock(&this->m_mutex);
+    }
+    else if(this->m_wsSize == 1)
+    {
+        pthread_mutex_lock(&this->m_mutex);
+        temp = this->m_frist;
+        this->m_frist = NULL;
+        this->m_end = NULL;
+        this->m_wsSize--;
+        pthread_mutex_unlock(&this->m_mutex);
+    }
+    return temp;
 }
 
 static void Init(struct WebServer *this)
@@ -129,8 +198,11 @@ static void Init(struct WebServer *this)
     this->m_thpool->Init(this->m_thpool, this->m_taskNum);
     LOG_INFO("Threadpool num: %d", this->m_taskNum);
 
-    char *dbPath;
-    dbPath = ParaCheck(dbPath);
+    char dbPath[PATH_LEN];
+    char *workPath = ParaCheck(workPath);
+    int len = strlen(workPath);
+    memcpy(dbPath, workPath, len);
+    sprintf(&dbPath[len], "/%s.db", this->m_dbName);
     LOG_INFO("Database path: %s", dbPath);
     this->m_sqlpool->Init(this->m_sqlpool, dbPath, 1);
     LOG_INFO("Sqlpool num: 1");
@@ -153,7 +225,6 @@ static void ReadMsg(struct WebServer *this, int sockfd)
     Tcp *conn = (Tcp *)node->data;
     conn->m_expire = EXPIRE;
     this->m_thpool->AddTask(this->m_thpool, (void*)conn->Recv, conn);
-    LOG_INFO("====================================================================================================");
     LOG_INFO("Recv from fd: %d ip: %d port: %d", sockfd, conn->m_address.sin_addr.s_addr, conn->m_address.sin_port);
 }
 
@@ -164,7 +235,6 @@ static void SendMsg(struct WebServer *this, int sockfd)
     conn->m_expire = EXPIRE;
     this->m_thpool->AddTask(this->m_thpool, (void*)conn->Send, conn);
     LOG_INFO("Send to fd: %d ip: %d port: %d", sockfd, conn->m_address.sin_addr.s_addr, conn->m_address.sin_port);
-    LOG_INFO("====================================================================================================");
 }
 
 static void CloseConn(struct WebServer *this, int sockfd)
@@ -218,12 +288,19 @@ static void Run(struct WebServer *this)
         if(this->isTimeout)
         {
             this->isTimeout = false;
-            ExpireCheck(this->m_tree->m_root);
+            WsList *temp = this->PopMsg(this);
+            ExpireCheck(this->m_tree->m_root, temp);
+            if(temp != NULL)
+            {
+                FREE(temp->msg);
+                FREE(temp);
+            }
             while(this->m_stackSize > 0)
             {
                 sockfd = StackPop();
                 CloseConn(this, sockfd);
             }
+            if(this->m_wsSize > 0) alarm(1);
         }
     }
 }
@@ -232,6 +309,7 @@ WebServer* WebServerInit(void)
 {
     WebServer *this = malloc(sizeof(WebServer));
     memset(this, 0, sizeof(WebServer));
+    pthread_mutex_init(&this->m_mutex, NULL);
 
     this->m_tree = TreeInit();
     this->m_thpool = ThreadPoolInit();
@@ -239,6 +317,8 @@ WebServer* WebServerInit(void)
     this->Config = Config;
     this->Init = Init;
     this->Run = Run;
+    this->PushMsg = PushMsg;
+    this->PopMsg = PopMsg;
     return this;
 }
 
@@ -252,5 +332,6 @@ void WebServerRelease(WebServer* this)
     TreeRelease(this->m_tree);
     ThreadPoolRelease(this->m_thpool);
     SqlPoolRelease(this->m_sqlpool);
+    pthread_mutex_destroy(&this->m_mutex);
     FREE(this);
 }

@@ -14,16 +14,8 @@ typedef struct SysPara {
     SqlPool *sqlpool;
     // 程序路径
     char workPath[PATH_LEN];
-    // 数据库路径
-    char dbPath[PATH_LEN];
-    // 日志路径
-    char logPath[PATH_LEN];
 }SysPara;
 
-// 设置数据库路径
-void SetDBPath(char *name);
-// 设置日志路径
-void SetLogPath(char *name);
 // 设置程序路径
 void SetWorkPath(char *path);
 extern SysPara syspara;

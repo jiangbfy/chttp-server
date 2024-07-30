@@ -20,9 +20,16 @@
 // epoll支持的最大并发量
 #define EPOLL_SIZE 1000
 // alarm定时周期
-#define TIMEOUT    60
+#define TIMEOUT    10
 // TCP超时时间
 #define EXPIRE     60
+
+typedef struct WsList
+{
+    char *msg;
+    uint16_t len;
+    struct WsList *next;
+} WsList;
 
 typedef struct WebServer
 {
@@ -44,6 +51,12 @@ typedef struct WebServer
     int m_stack[EPOLL_SIZE];
     // epoll事件结构体
     struct epoll_event m_events[EPOLL_SIZE];
+    // Ws发布数据
+    WsList *m_frist;
+    WsList *m_end;
+    int m_wsSize;
+    // 互斥锁
+    pthread_mutex_t m_mutex;
 
     // 数据库用户名
     char *m_user;
@@ -64,6 +77,10 @@ typedef struct WebServer
     void (*Init)(struct WebServer *this);
     // 服务器运行
     void (*Run)(struct WebServer *this);
+    // 添加Ws消息
+    void (*PushMsg)(struct WebServer *this, char *msg, uint16_t len);
+    // 读取Ws消息
+    WsList* (*PopMsg)(struct WebServer *this);
 } WebServer;
 
 WebServer* WebServerInit(void);

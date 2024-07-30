@@ -10,8 +10,6 @@
 #include "def.h"
 #include "cJSON.h"
 
-#define RES_BODY 512
-
 // GET,POST,OPTION
 typedef enum METHOD
 {
@@ -26,8 +24,15 @@ typedef enum LINE_STATE
 {
     LINE_OK = 0,
     LINE_ERROR,
-    LINE_FIN
+    LINE_OPTION
 } LINE_STATE;
+
+typedef enum WS_TYPE
+{
+    WS_NULL = 0,
+    WS_NORMAL,
+    WS_PUBLISH
+} WS_TYPE;
 
 typedef struct Http
 {
@@ -39,13 +44,17 @@ typedef struct Http
     char *m_url;
     // http body
     char *m_body;
+    // http head
+    char *m_head;
     // ip地址和端口
     struct sockaddr_in *m_address;
+    // 是否为websocket协议
+    WS_TYPE m_ws;
 
     // 解析http请求 (http请求报文，http请求长度)
     void (*ProcessRequest)(struct Http *this, char *request, int reqLen);
     // 处理应答 (处理请求结果)
-    void (*ProcessResponse)(struct Http *this, char *response);
+    void (*ProcessResponse)(struct Http *this, char *response, char *head);
 } Http;
 
 Http* HttpInit(void);

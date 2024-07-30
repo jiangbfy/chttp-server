@@ -88,7 +88,7 @@ int Adduser(char *argOut, Http *this)
 }
 
 const Service UserServiceList[] = {
-    {"/userinfor", UserInfo},
-    {"/adduser", Adduser},
+    {"/info", UserInfo},
+    {"/add", Adduser},
     {"NULL", NULL}
 };

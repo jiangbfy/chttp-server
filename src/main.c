@@ -9,7 +9,7 @@ int main(int argc, char *argv[])
     LogInit();
     WebServer *server = WebServerInit();
     ParaCommit(server);
-    server->Config(server, 16790, "root", "root", "server", 8);
+    server->Config(server, 13456, "root", "root", "server", 8);
     server->Init(server);
     server->Run(server);
     WebServerRelease(server);

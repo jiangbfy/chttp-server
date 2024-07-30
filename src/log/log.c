@@ -63,6 +63,10 @@ void PrintLog(struct Log *this, int level, const char *format, ...)
 
     if(this->m_today != sys_tm->tm_mday)
     {
+        char logPath[PATH_LEN];
+        char *workPath = ParaCheck(workPath);
+        int len = strlen(workPath);
+        memcpy(logPath, workPath, len);
         //日期发生变更，新建文件
         pthread_mutex_lock(&this->m_mutex);
         this->m_today = sys_tm->tm_mday;
@@ -74,8 +78,7 @@ void PrintLog(struct Log *this, int level, const char *format, ...)
             this->m_fp = NULL;
         }
         sprintf(logFile, "%02d_%02d_%02d", sys_tm->tm_year - 100, sys_tm->tm_mon + 1, sys_tm->tm_mday);
-        SetLogPath(logFile);
-        char *logPath = ParaCheck(logPath);
+        sprintf(&logPath[len], "/logs/%s.log", logFile);
         this->m_fp = fopen(logPath, "a");
         pthread_mutex_unlock(&this->m_mutex);
     }
@@ -147,6 +150,7 @@ void LogInit(void)
 
 void LogRelease(void)
 {
+    LogInstance->m_shutdown = 1;
     MsgList *temp = LogInstance->m_frist;
     while(LogInstance->m_frist != NULL)
     {
@@ -155,6 +159,5 @@ void LogRelease(void)
         FREE(temp);
         temp = LogInstance->m_frist;
     }
-    LogInstance->m_shutdown = 1;
     pthread_mutex_destroy(&LogInstance->m_mutex);
 }

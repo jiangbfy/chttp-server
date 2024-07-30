@@ -1,10 +1,12 @@
 #include "controller.h"
 #include "cmd_service.h"
 #include "user_service.h"
+#include "ws_service.h"
 
 const static Controller ControllerList[] = {
     {"/cmd", CmdServiceList},
-    {"/infor", UserServiceList},
+    {"/user", UserServiceList},
+    {"/api", WsServiceList},
     {"NULL", NULL}
 };
 

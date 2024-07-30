@@ -3,20 +3,6 @@
 
 SysPara syspara = {0};
 
-void SetDBPath(char *name)
-{
-    int len = strlen(syspara.workPath);
-    memcpy(syspara.dbPath, syspara.workPath, len);
-    sprintf(&syspara.dbPath[len], "/%s.db", name);
-}
-
-void SetLogPath(char *name)
-{
-    int len = strlen(syspara.workPath);
-    memcpy(syspara.logPath, syspara.workPath, len);
-    sprintf(&syspara.logPath[len], "/logs/%s.log", name);
-}
-
 void SetWorkPath(char *path)
 {
     int i, len;
