@@ -1,178 +1,282 @@
 #include "http.h"
-#include "controller.h"
 #include "log.h"
+#include "cmd.h"
+#include "user.h"
+#include "file.h"
 
-static char* GetLine(char *line, char *end)
+const static ServiceClass ServiceClassList[] = {
+    {"/api/cmd", CmdService},
+    {"/api/user", UserService},
+    {"/api/file", FileService},
+    {"NULL", NULL}
+};
+
+static void Config(struct Http *this, int sockfd, struct sockaddr_in *addr)
 {
-    char *pbuf = strstr(line, "\r\n");
-    if(pbuf == NULL)
-        return NULL;
-    return pbuf;
-}
-//解析http请求
-static void ParseReq(struct Http *this, char *head, char *end)
-{
-    char *pbuf = head;
-
-    if(memcmp(pbuf, "GET", 3) == 0)
-    {
-        this->m_method = METHOD_GET;
-        LOG_INFO("METHOD: GET");
-        pbuf += 4;
-    }
-    else if(memcmp(pbuf, "POST", 4) == 0)
-    {
-        this->m_method = METHOD_POST;
-        LOG_INFO("METHOD: POST");
-        pbuf += 5;
-    }
-    else if(memcmp(pbuf, "OPTION", 6) == 0)
-    {
-        LOG_INFO("METHOD: OPTION");
-        this->m_method = METHOD_OPTION;
-        this->m_line_state = LINE_OPTION;
-        pbuf += 7;
-        this->m_url = pbuf;
-    }
-    else
-    {
-        this->m_line_state = LINE_ERROR;
-        pbuf = strstr(pbuf, " ");
-        pbuf++;
-        this->m_url = pbuf;
-        return;
-    }
-
-    this->m_url = pbuf;
-    pbuf = strstr(this->m_url, " ");
-    pbuf++;
-
-    if(memcmp(pbuf, "HTTP/1.1", 8) != 0)
-    {
-        this->m_line_state = LINE_ERROR;
-    }
-}
-//解析http头
-static void ProcessRequest(struct Http *this, char *request, int reqLen)
-{
-    request[reqLen] = 0;
-    this->m_line_state = LINE_OK;
-    char *msgEnd = request + reqLen;
-    char *reqEnd = GetLine(request, msgEnd);
-    if(reqEnd == NULL)
-    {
-        this->m_line_state = LINE_ERROR;
-        return;
-    }
-    *reqEnd = 0;
-    ParseReq(this, request, reqEnd);
-    char *head = reqEnd + 2;
-    this->m_head = head;
-    char *headEnd = NULL;
-    int headLen = 1;
-    while(headLen > 0)
-    {
-        headEnd = GetLine(head, msgEnd);
-        headLen = headEnd - head;
-        if(headEnd == NULL)
-        {
-            this->m_line_state = LINE_ERROR;
-            return;
-        }
-        head = headEnd + 2;
-    }
-    *(head - 4) = 0;
-    this->m_body = head;
-    LOG_INFO("URL: %s", this->m_url);
-    int bodyLen = reqLen - (this->m_body - request);
-    if(bodyLen < LOG_LEN) LOG_INFO("BODY: %s", this->m_body);
+    this->m_sockfd = sockfd;
+    memcpy(&this->m_address, addr, sizeof(struct sockaddr_in));
 }
 
-static void ProcessResponse(struct Http *this, char *response, char *head)
+static void Parse(struct Http *this, char *line, int len)
 {
-    char *pbuf = head;
-    int len = 0;
+    if (this->m_state == STATE_REQ)
+    {
+        char *req = line;
+        char *reqEnd = strstr(req, " ");
+        *reqEnd = 0;
+        if (strcmp(req, "POST") == 0) this->m_method = METHOD_POST;
+        else if (strcmp(req, "GET") == 0) this->m_method = METHOD_GET;
+        else if (strcmp(req, "OPTIONS") == 0) this->m_method = METHOD_OPTIONS;
+        else { this->m_method = METHOD_NULL; this->m_state = STATE_ERR; }
+        char *url = reqEnd + 1;
+        char *urlEnd = strstr(url, " ");
+        *urlEnd = 0;
+        int urlLen = urlEnd - url;
+        this->m_url = malloc(urlLen + 1);
+        strcpy(this->m_url, url);
+        this->m_state = STATE_HEAD;
+        LOG_INFO("%s %s", req, this->m_url);
+    }
+    else if(this->m_state == STATE_HEAD)
+    {
+        if (len == 0) { this->m_state = STATE_BODY; return; }
+        char *key = line;
+        char *keyEnd = strstr(key, ":");
+        *keyEnd = 0;
+        char *value = keyEnd + 2;
+        this->m_header->Insert(this->m_header, key, value);
+    }
+}
 
-    if(this->m_line_state != LINE_OK)
+void ParseParam(struct Http *this, char *param)
+{
+    int len = strlen(param);
+    char *line = malloc(len + 1);
+    strcpy(line, param);
+    char *key = line;
+    char *keyEnd = strstr(key, "=");
+    if (keyEnd == NULL) return;
+    *keyEnd = 0;
+    char *value = keyEnd + 1;
+    char *valueEnd = strstr(value, "&");
+    if (valueEnd != NULL) *valueEnd = 0;
+    while (keyEnd != NULL && valueEnd != NULL)
     {
-        response[0] = 0;
+        this->m_param->Insert(this->m_param, key, value);
+        key = valueEnd + 1;
+        keyEnd = strstr(key, "=");
+        if (keyEnd == NULL) break;
+        *keyEnd = 0;
+        value = keyEnd + 1;
+        valueEnd = strstr(value, "&");
+        if (valueEnd == NULL) break;
+        *valueEnd = 0;
     }
-    else
-    {
-        len = ControllerParse(&response[0], this);
-        if(len < LOG_LEN) LOG_INFO("Response: %s", &response[0]);
-    }
+    if (keyEnd != NULL && valueEnd == NULL) this->m_param->Insert(this->m_param, key, value);
+    FREE(line);
+}
 
-    if(this->m_ws != WS_NULL) return;
+void AddOkHead(struct Http *this)
+{
+    this->m_respHead = malloc(RESP_HEAD_LEN);
+    char *pbuf = this->m_respHead;
 
-    if(this->m_line_state != LINE_OK)
-    {
-        if(this->m_method == METHOD_OPTION)
-        {
-            //OPTION方法处理
-            strcpy(pbuf, "HTTP/1.1 200\r\n");
-            pbuf += 14;
-        }
-        else
-        {
-            //请求错误
-            strcpy(pbuf, "HTTP/1.1 400 Bad Request\r\n");
-            pbuf += 26;
-        }
-    }
-    else
-    {
-        strcpy(pbuf, "HTTP/1.1 200 OK\r\n");
-        pbuf += 17;
-    }
-    //允许跨域
+    strcpy(pbuf, "HTTP/1.1 200 OK \r\n");
+    pbuf += 18;
     strcpy(pbuf, "Access-Control-Allow-Credentials: true\r\n");
     pbuf += 40;
     strcpy(pbuf, "Access-Control-Allow-Origin: *\r\n");
     pbuf += 32;
     strcpy(pbuf, "Access-Control-Allow-Methods: GET, POST\r\n");
     pbuf += 41;
-    strcpy(pbuf, "Access-Control-Allow-Headers: Access-Control-Allow-Headers, Content-Length, Accept, Origin, Host, Connection, Keep-Alive, Content-Type\r\n");
-    pbuf += 136;
+    strcpy(pbuf, "Access-Control-Allow-Headers: Content-Length, Accept, Origin, Host, Connection, Keep-Alive, Content-Type\r\n");
+    pbuf += 106;
     strcpy(pbuf, "Connection: keep-alive\r\n");
     pbuf += 24;
     strcpy(pbuf, "Keep-Alive: timeout=60\r\n");
     pbuf += 24;
-    strcpy(pbuf, "Content-type: application/json\r\n");
-    pbuf += 32;
-    sprintf(pbuf, "Content-length: %d\r\n\r\n", len);
-}
-//get参数装json
-int ParseUrl(char *url, cJSON *object)
-{
-    char *paraEnd = strstr(url, " ");
-    *paraEnd = 0;
-    char *para = strstr(url, "?");
-    if(para == NULL)
+    if (this->m_fileType != NULL)
     {
-        return -1;
+        int contentTypeLen = sprintf(pbuf, "Content-Type: %s\r\n", this->m_fileType);
+        pbuf += contentTypeLen;
     }
-
-    char *key = NULL, *value = NULL;
-    while(true)
+    else
     {
-        key = para + 1;
-        value = strstr(key, "=");
-        *value = 0;
-        value += 1;
-        para = strstr(value, "&");
-        if(para == NULL)
+        strcpy(pbuf, "Content-Type: application/json\r\n");
+        pbuf += 32;
+    }
+    int contentLength = sprintf(pbuf, "Content-Length: %d\r\n\r\n", this->m_respBodyLen);
+    this->m_respHeadLen = (pbuf - this->m_respHead) + contentLength;
+}
+
+void AddBadHead(struct Http *this)
+{
+    this->m_respHead = malloc(RESP_HEAD_LEN);
+    char *pbuf = this->m_respHead;
+
+    strcpy(pbuf, "HTTP/1.1 400 Bad Request \r\n");
+    pbuf += 26;
+    strcpy(pbuf, "Access-Control-Allow-Credentials: true\r\n");
+    pbuf += 40;
+    strcpy(pbuf, "Access-Control-Allow-Origin: *\r\n");
+    pbuf += 32;
+    strcpy(pbuf, "Access-Control-Allow-Methods: GET, POST\r\n");
+    pbuf += 41;
+    strcpy(pbuf, "Access-Control-Allow-Headers: Content-Length, Accept, Origin, Host, Connection, Keep-Alive, Content-Type\r\n");
+    pbuf += 106;
+    strcpy(pbuf, "Connection: keep-alive\r\n");
+    pbuf += 24;
+    strcpy(pbuf, "Keep-Alive: timeout=60\r\n");
+    pbuf += 24;
+    strcpy(pbuf, "Content-Length: 0\r\n\r\n");
+    pbuf += 21;
+    this->m_respHeadLen = (pbuf - this->m_respHead);
+}
+
+void AddOptionsHead(struct Http *this)
+{
+    this->m_respHead = malloc(RESP_HEAD_LEN);
+    char *pbuf = this->m_respHead;
+
+    strcpy(pbuf, "HTTP/1.1 200 \r\n");
+    pbuf += 14;
+    strcpy(pbuf, "Access-Control-Allow-Credentials: true\r\n");
+    pbuf += 40;
+    strcpy(pbuf, "Access-Control-Allow-Origin: *\r\n");
+    pbuf += 32;
+    strcpy(pbuf, "Access-Control-Allow-Methods: GET, POST\r\n");
+    pbuf += 41;
+    strcpy(pbuf, "Access-Control-Allow-Headers: Content-Length, Accept, Origin, Host, Connection, Keep-Alive, Content-Type\r\n");
+    pbuf += 106;
+    strcpy(pbuf, "Connection: keep-alive\r\n");
+    pbuf += 24;
+    strcpy(pbuf, "Keep-Alive: timeout=60\r\n");
+    pbuf += 24;
+    strcpy(pbuf, "Content-Length: 0\r\n\r\n");
+    pbuf += 21;
+    this->m_respHeadLen = (pbuf - this->m_respHead);
+}
+
+static void Process(struct Http *this)
+{
+    if (this->m_method == METHOD_OPTIONS) goto HttpOptions;
+
+    int firstLen = 0;
+    ServiceClass *servClass = (ServiceClass *)ServiceClassList;
+    Service *serv = NULL;
+    while (servClass->m_service != NULL)
+    {
+        firstLen = strlen(servClass->m_first);
+        if (memcmp(servClass->m_first, this->m_url, firstLen) == 0) break;
+        servClass++;
+    }
+    if (servClass->m_service == NULL) { this->function = NULL; goto HttpBad; }
+    
+    serv = (Service *)servClass->m_service;
+    char *secondUrl = &this->m_url[firstLen];
+    int secondLen = 0;
+    char *param = strstr(this->m_url, "?");
+    if (param != NULL) {
+        param = param + 1;
+        ParseParam(this, param);
+    }
+    while (serv->function != NULL)
+    {
+        secondLen = strlen(serv->m_second);
+        if(memcmp(serv->m_second, secondUrl, secondLen)  == 0) break;
+        serv++;
+    }
+    if(serv->function == NULL) { this->function = NULL; goto HttpBad; }
+
+    if (this->m_method != serv->m_method) goto HttpBad;
+
+    this->function = serv->function;
+    this->function(this);
+    AddOkHead(this);
+    return;
+
+HttpBad:
+    AddBadHead(this);
+    return;
+HttpOptions:
+    AddOptionsHead(this);
+    return;
+}
+
+static void Recv(struct Http *this)
+{
+    int noDataCnt = 0, lineLen = 0, hasLen = 0, dealLen = 0, rxLen = 0, bodyLen = 0;
+    char *lineBeg = NULL, *lineEnd = NULL;
+    char *rxBuf = malloc(BUF_LEN);
+    char *parseBuf = malloc(BUF_LEN);
+
+    while (true)
+    {
+        rxLen = recv(this->m_sockfd, &rxBuf[hasLen], RECV_LEN - hasLen, 0);
+        if (rxLen > 0)
         {
-            cJSON_AddStringToObject(object, key, value);
-            break;
+            noDataCnt = 0;
+            dealLen = 0;
+            hasLen += rxLen;
+            rxBuf[hasLen] = 0;
+            if (this->m_state < STATE_BODY)
+            {
+                lineBeg = rxBuf;
+                lineEnd = strstr(lineBeg, "\r\n");
+                while (lineEnd != NULL)
+                {
+                    lineLen = lineEnd - lineBeg;
+                    memcpy(parseBuf, lineBeg, lineLen);
+                    parseBuf[lineLen] = 0;
+                    Parse(this, parseBuf, lineLen);
+                    lineBeg = lineEnd + 2;
+                    dealLen += (lineLen + 2);
+                    hasLen -= (lineLen + 2);
+                    if (this->m_state == STATE_BODY) break;
+                    lineEnd = strstr(lineBeg, "\r\n");
+                }
+                if (hasLen > 0)
+                {
+                    memcpy(rxBuf, &rxBuf[dealLen], hasLen);
+                    rxBuf[hasLen] = 0;
+                }
+                if (this->m_state == STATE_BODY && this->m_method == METHOD_POST)
+                {
+                    char *length = this->m_header->Search(this->m_header, "Content-Length");
+                    int lengthInt = atoi(length);
+                    this->m_bodyLen = lengthInt;
+                    this->m_body = malloc(lengthInt + 1);
+                    if (hasLen > 0)
+                    {
+                        memcpy(this->m_body, rxBuf, hasLen);
+                        bodyLen = hasLen;
+                        hasLen = 0;
+                        this->m_body[bodyLen] = 0;
+                    }
+                }
+            }
+            else
+            {
+                if (this->m_method == METHOD_POST)
+                {
+                    memcpy(&this->m_body[bodyLen], rxBuf, hasLen);
+                    bodyLen += hasLen;
+                    this->m_body[bodyLen] = 0;
+                }
+                hasLen = 0;
+            }
         }
         else
         {
-            *para = 0;
-            cJSON_AddStringToObject(object, key, value);
+            noDataCnt++;
+            usleep(50000);
         }
+        if (noDataCnt > 1) break;
     }
-    return 0;
+    FREE(rxBuf);
+    FREE(parseBuf);
+
+    Process(this);
 }
 
 Http* HttpInit(void)
@@ -180,11 +284,20 @@ Http* HttpInit(void)
     Http *this = malloc(sizeof(Http));
     memset(this, 0, sizeof(Http));
 
-    this->ProcessRequest = ProcessRequest;
-    this->ProcessResponse = ProcessResponse;
+    this->Config = Config;
+    this->Recv = Recv;
+    this->m_header = KVListInit();
+    this->m_param = KVListInit();
     return this;
 }
 void  HttpRelease(Http *this)
 {
+    KVListRelease(this->m_header);
+    KVListRelease(this->m_param);
+    if (this->m_url != NULL) FREE(this->m_url);
+    if (this->m_body != NULL) FREE(this->m_body);
+    if (this->m_respHead != NULL) FREE(this->m_respHead);
+    if (this->m_respBody != NULL) FREE(this->m_respBody);
+    if (this->m_fileType != NULL) FREE(this->m_fileType);
     FREE(this);
 }

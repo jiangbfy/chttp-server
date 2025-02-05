@@ -16,8 +16,8 @@ SRCDIRS			:= src \
 					src/http \
 					src/server \
 					src/pool \
-					src/lib \
-					src/log
+					src/log \
+					src/lib
 					
 
 INCLUDE			:= $(patsubst %, -I %, $(INCDIRS))

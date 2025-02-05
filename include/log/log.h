@@ -7,7 +7,7 @@
 #include <pthread.h>
 #include "def.h"
 
-#define LOG_LEN 1024
+#define LOG_LEN 4096
 
 typedef struct MsgList
 {

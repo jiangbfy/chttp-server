@@ -1,15 +1,10 @@
 #include "webserver.h"
 #include "syspara.h"
 #include "log.h"
-#include "http.h"
 
-static void Config(struct WebServer *this, int port, char *user, char *pwd, char *dbName, int taskNum)
+static void Config(struct WebServer *this, int port, char *dbName, int taskNum)
 {
     this->m_port = port;
-    this->m_user = malloc(strlen(user) + 1);
-    strcpy(this->m_user, user);
-    this->m_pwd = malloc(strlen(pwd) + 1);
-    strcpy(this->m_pwd, pwd);
     this->m_dbName = malloc(strlen(dbName) + 1);
     strcpy(this->m_dbName, dbName);
     this->m_taskNum = taskNum;
@@ -59,103 +54,6 @@ static void deal_signal(struct WebServer *this, int sockfd)
     recv(sockfd, (char *)&msg, sizeof(msg), 0);
     this->isTimeout = true;
 }
-//对超时的fd压栈保存
-static void StackPush(int id)
-{
-    WebServer *server = ParaCheck(server);
-    server->m_stack[server->m_stackSize] = id;
-    server->m_stackSize++;
-}
-//对超时的fd出栈处理
-static int StackPop(void)
-{
-    WebServer *server = ParaCheck(server);
-    server->m_stackSize--;
-    return server->m_stack[server->m_stackSize];
-}
-//tcp连接超时检查
-static void ExpireCheck(TreeNode* node, WsList *temp) {
-    if (node != NULL) {
-        ExpireCheck(node->left, temp);
-        Tcp *conn = (Tcp *)node->data;
-        conn->m_expire -= TIMEOUT;
-        if(conn->m_expire < 0)
-        {
-            StackPush(node->id);
-        }
-        else
-        {
-            if(conn->m_ws == WS_NORMAL)
-            {
-                if(temp != NULL)
-                {
-                    conn->m_txBuf[0] = 0x81;
-                    if(temp->len < 126)
-                    {
-                        conn->m_txBuf[1] = temp->len;
-                        strcpy(&conn->m_txBuf[2], temp->msg);
-                        LOG_INFO("TxSocket: %s", &conn->m_txBuf[2]);
-                    }
-                    else if(temp->len >= 126 && temp->len < (BUF_LEN - 4))
-                    {
-                        conn->m_txBuf[1] = 126;
-                        conn->m_txBuf[2] = (temp->len >> 8);
-                        conn->m_txBuf[3] = temp->len;
-                        strcpy(&conn->m_txBuf[4], temp->msg);
-                        if(temp->len < LOG_LEN) LOG_INFO("TxSocket: %s", &conn->m_txBuf[4]);
-                    }
-                    modfd(conn->m_epollfd, conn->m_sockfd, EPOLLOUT, true, 0);
-                }
-            }
-        }
-        ExpireCheck(node->right, temp);
-    }
-
-}
-
-static void PushMsg(struct WebServer *this, char *msg, uint16_t len)
-{
-    WsList *temp = malloc(sizeof(WsList));
-    temp->msg = malloc(len + 1);
-    strcpy(temp->msg, msg);
-    temp->len = len;
-
-    pthread_mutex_lock(&this->m_mutex);
-    this->m_wsSize++;
-    if(this->m_frist == NULL){
-        this->m_frist = temp;
-        this->m_end = temp;
-    }
-    else{
-        this->m_end->next = temp;
-        this->m_end = temp;
-    }
-    pthread_mutex_unlock(&this->m_mutex);
-    alarm(1);
-}
-
-static WsList* PopMsg(struct WebServer *this)
-{
-    WsList *temp = NULL;
-    if(this->m_wsSize > 1)
-    {
-        pthread_mutex_lock(&this->m_mutex);
-        temp = this->m_frist;
-        this->m_frist = this->m_frist->next;
-        this->m_wsSize--;
-        pthread_mutex_unlock(&this->m_mutex);
-    }
-    else if(this->m_wsSize == 1)
-    {
-        pthread_mutex_lock(&this->m_mutex);
-        temp = this->m_frist;
-        this->m_frist = NULL;
-        this->m_end = NULL;
-        this->m_wsSize--;
-        pthread_mutex_unlock(&this->m_mutex);
-    }
-    return temp;
-}
 
 static void Init(struct WebServer *this)
 {
@@ -198,50 +96,37 @@ static void Init(struct WebServer *this)
     this->m_thpool->Init(this->m_thpool, this->m_taskNum);
     LOG_INFO("Threadpool num: %d", this->m_taskNum);
 
-    char dbPath[PATH_LEN];
-    char *workPath = ParaCheck(workPath);
-    int len = strlen(workPath);
-    memcpy(dbPath, workPath, len);
-    sprintf(&dbPath[len], "/%s.db", this->m_dbName);
-    LOG_INFO("Database path: %s", dbPath);
-    this->m_sqlpool->Init(this->m_sqlpool, dbPath, 1);
-    LOG_INFO("Sqlpool num: 1");
-    SqlPool *sqlpool = this->m_sqlpool;
-    ParaCommit(sqlpool);
+    this->m_sqlpool->Init(this->m_sqlpool, this->m_dbName);
 }
 
 static void AddConn(struct WebServer *this, int clientfd, struct sockaddr_in *addr)
 {
     addfd(this->m_epollfd, clientfd, true, 0);
     Tcp *conn = TcpInit();
-    conn->Config(conn, this->m_epollfd, clientfd, addr, EXPIRE);
-    this->m_tree->Insert(this->m_tree, clientfd, (void *)conn);
+    conn->Config(conn, this->m_epollfd, clientfd, addr);
+    this->m_list->Push(this->m_list, clientfd, (void *)conn);
     LOG_INFO("New connection fd: %d ip: %d port: %d", clientfd, addr->sin_addr.s_addr, addr->sin_port);
 }
 
 static void ReadMsg(struct WebServer *this, int sockfd)
 {
-    TreeNode *node = this->m_tree->Search(this->m_tree, sockfd);
+    ListNode *node = this->m_list->Find(this->m_list, sockfd);
     Tcp *conn = (Tcp *)node->data;
-    conn->m_expire = EXPIRE;
     this->m_thpool->AddTask(this->m_thpool, (void*)conn->Recv, conn);
-    LOG_INFO("Recv from fd: %d ip: %d port: %d", sockfd, conn->m_address.sin_addr.s_addr, conn->m_address.sin_port);
 }
 
 static void SendMsg(struct WebServer *this, int sockfd)
 {
-    TreeNode *node = this->m_tree->Search(this->m_tree, sockfd);
+    ListNode *node = this->m_list->Find(this->m_list, sockfd);
     Tcp *conn = (Tcp *)node->data;
-    conn->m_expire = EXPIRE;
     this->m_thpool->AddTask(this->m_thpool, (void*)conn->Send, conn);
-    LOG_INFO("Send to fd: %d ip: %d port: %d", sockfd, conn->m_address.sin_addr.s_addr, conn->m_address.sin_port);
 }
 
 static void CloseConn(struct WebServer *this, int sockfd)
 {
     removefd(this->m_epollfd, sockfd);
     close(sockfd);
-    this->m_tree->Delete(this->m_tree, sockfd);
+    this->m_list->Pop(this->m_list, sockfd);
     LOG_INFO("Close fd: %d", sockfd);
 }
 
@@ -288,20 +173,200 @@ static void Run(struct WebServer *this)
         if(this->isTimeout)
         {
             this->isTimeout = false;
-            WsList *temp = this->PopMsg(this);
-            ExpireCheck(this->m_tree->m_root, temp);
-            if(temp != NULL)
-            {
-                FREE(temp->msg);
-                FREE(temp);
-            }
-            while(this->m_stackSize > 0)
-            {
-                sockfd = StackPop();
-                CloseConn(this, sockfd);
-            }
-            if(this->m_wsSize > 0) alarm(1);
+            this->m_list->Check(this->m_list, TIMEOUT);
         }
+    }
+}
+
+void Push(struct List *this, int id, void *data)
+{
+    if (this->m_size >= TCP_SIZE) return;
+
+    ListNode *node = malloc(sizeof(ListNode));
+    memset(node, 0, sizeof(ListNode));
+    node->id = id;
+    node->timeout = EXPIRE;
+    node->data = data;
+
+    if (this->m_size == 0)
+    {
+        this->m_head = node;
+        this->m_end = node;
+    }
+    else
+    {
+
+        this->m_end->next = node;
+        node->prev = this->m_end;
+        this->m_end = node;
+    }
+    this->m_size++;
+}
+
+void Pop(struct List *this, int id)
+{
+    ListNode *temp = this->m_head;
+    ListNode *prev = NULL, *next = NULL;
+    while (temp != NULL)
+    {
+        if (temp->id == id)
+        {
+            if(this->m_size == 1)
+            {
+                this->m_head = NULL;
+                this->m_end = NULL;
+                this->m_size--;
+                FREE(temp->data);
+                FREE(temp);
+                return;
+            }
+            if(temp == this->m_head)
+            {
+                this->m_head = temp->next;
+                this->m_head->prev = NULL;
+            }
+            else if(temp == this->m_end)
+            {
+                prev = temp->prev;
+                this->m_end = prev;
+                this->m_end->next = NULL;
+            }
+            else
+            {
+                prev = temp->prev;
+                next = temp->next;
+                prev->next = next;
+                next->prev = prev;
+            }
+            this->m_size--;
+            FREE(temp->data);
+            FREE(temp);
+            return;
+        }
+        temp = temp->next;
+    }
+}
+
+ListNode* Find(struct List *this, int id)
+{
+    ListNode *temp = this->m_head;
+    ListNode *prev = NULL, *next = NULL;
+    while (temp != NULL)
+    {
+        if (temp->id == id)
+        {
+            if(this->m_size == 1)
+            {
+                temp->timeout = EXPIRE;
+                return temp;
+            }
+            if(temp == this->m_head)
+            {
+                this->m_head = temp->next;
+                this->m_head->prev = NULL;
+                temp->timeout = EXPIRE;
+                temp->next = NULL;
+                this->m_end->next = temp;
+                temp->prev = this->m_end;
+                this->m_end = temp;
+            }
+            else if(temp == this->m_end)
+            {
+                temp->timeout = EXPIRE;
+            }
+            else
+            {
+                prev = temp->prev;
+                next = temp->next;
+                prev->next = next;
+                next->prev = prev;
+                temp->next = NULL;
+                temp->timeout = EXPIRE;
+                this->m_end->next = temp;
+                temp->prev = this->m_end;
+                this->m_end = temp;
+            }
+            return temp;
+        }
+        temp = temp->next;
+    }
+    return NULL;
+}
+
+void Check(struct List *this, int time)
+{
+    ListNode *temp = this->m_head;
+    ListNode *prev = NULL, *next = NULL;
+    WebServer *server = ParaCheck(server);
+    while (temp != NULL)
+    {
+        temp->timeout -= time;
+        if (temp->timeout <= 0)
+        {
+            if(this->m_size == 1)
+            {
+                LOG_INFO("release: %d", temp->id);
+                this->m_head = NULL;
+                this->m_end = NULL;
+                this->m_size--;
+                removefd(server->m_epollfd, temp->id);
+                close(temp->id);
+                FREE(temp->data);
+                FREE(temp);
+                return;
+            }
+            if(temp == this->m_head)
+            {
+                this->m_head = temp->next;
+                this->m_head->prev = NULL;
+            }
+            else if (temp == this->m_end)
+            {
+                this->m_end = temp->prev;
+                this->m_end->next = NULL;
+            }
+            else
+            {
+                prev = temp->prev;
+                next = temp->next;
+                prev->next = next;
+                next->prev = prev;
+            }
+            LOG_INFO("release: %d", temp->id);
+            removefd(server->m_epollfd, temp->id);
+            close(temp->id);
+            FREE(temp->data);
+            FREE(temp);
+            this->m_size--;
+        }
+        else
+        {
+            temp = temp->next;
+        }
+    }
+}
+
+List* ListInit(void)
+{
+    List *this = malloc(sizeof(List));
+    memset(this, 0, sizeof(List));
+
+    this->Push = Push;
+    this->Find = Find;
+    this->Pop = Pop;
+    this->Check = Check;
+    return this;
+}
+
+void ListRelease(List* this)
+{
+    while (this->m_size > 0)
+    {
+        ListNode *next = this->m_head->next;
+        FREE(this->m_head->data);
+        FREE(this->m_head);
+        this->m_head = next;
+        this->m_size--;
     }
 }
 
@@ -311,14 +376,12 @@ WebServer* WebServerInit(void)
     memset(this, 0, sizeof(WebServer));
     pthread_mutex_init(&this->m_mutex, NULL);
 
-    this->m_tree = TreeInit();
+    this->m_list = ListInit();
     this->m_thpool = ThreadPoolInit();
     this->m_sqlpool = SqlPoolInit();
     this->Config = Config;
     this->Init = Init;
     this->Run = Run;
-    this->PushMsg = PushMsg;
-    this->PopMsg = PopMsg;
     return this;
 }
 
@@ -326,10 +389,8 @@ void WebServerRelease(WebServer* this)
 {
     close(this->m_listenfd);
     close(this->m_epollfd);
-    FREE(this->m_user);
-    FREE(this->m_pwd);
     FREE(this->m_dbName);
-    TreeRelease(this->m_tree);
+    ListRelease(this->m_list);
     ThreadPoolRelease(this->m_thpool);
     SqlPoolRelease(this->m_sqlpool);
     pthread_mutex_destroy(&this->m_mutex);

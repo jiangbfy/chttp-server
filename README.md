@@ -1,31 +1,79 @@
-# chttp-server
-## 简介
-&emsp;&emsp;Linux下以C语言实现的轻量级http服务器，提供一种嵌入式环境下前后端分离的后端方案，直接arm-linux-gnueabihf-gcc交叉编译就可以移植到开发板上运行。另一方面，可以帮助新手学习网络编程。
-+ 使用线程池并行处理不同http请求
-+ 使用epoll(IO多路复用)，socket设置为非阻塞
-+ 使用数据库连接池，因为sqlite3直接对数据库文件进行操作，不支持多个连接，所以数量为1
-+ 使用二叉树管理TCP连接，二叉树key为sockfd
-+ 日志模块记录程序运行状态
-+ 实现GET和POST请求，可解析url参数和json参数
-+ Controller根据第一段url匹配不同服务类，再根据第二段url匹配不同方法(例：/infor/userinfor，根据/infor找到user_service，根据/userinfor找到UserInfo方法，查询用户信息)
+## 一、前言
+&emsp;&emsp;软件使用纯C语言编写，完全开源，没有调用库文件。程序中使用了自定义的链表、线程池、日志、字符串处理等模块，是一个适合初学者学习练手的项目
+&emsp;&emsp;开源地址：https://github.com/jiangbfy/chttp-server
 
-## 运行
-+ 服务器环境
-	+ ubuntu18.04(可交叉编译，arm开发板中运行)
-+ 测试环境
-	+ postman
-+ 数据库初始化
+## 二、HTTP功能
+- 1、查询用户信息
 ```
-CREATE TABLE userinfo (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user TEXT NOT NULL,
-  passwd TEXT NOT NULL,
-  time TEXT NOT NULL
+GET /api/user/all
+```
+```
+"code": 200,
+"message": "usccess",
+"data": [
+    {
+        "id": "1",
+         "user": "root",
+        "passwd": "root",
+        "time": "2024-6-3 17:13:54"
+     },
+     {
+         "id": "2",
+         "user": "admin",
+         "passwd": "admin",
+        "time": "2024-6-4 13:43:34"
+    },
+    {
+         "id": "3",
+         "user": "imx6ull",
+         "passwd": "imx6ull",
+         "time": "2024-6-5 23:49:30"
+     },
+    {
+        "id": "4",
+         "user": "rk3588",
+         "passwd": "rk3588",
+         "time": "2024-7-5 12:22:46"
+     },
+]
+```
+
+- 2、下载图片
+```
+GET /api/file/download/static/lurennvzhu.jpg
+```
+<div style="text-align: center;"><img src="https://jiangbfy.com/static/image/2025-2/1738723949311.png01.png"/></div>
+
+- 3、上传图片
+```
+POST /api/file/upload
+Content-Type: multipart/form-data;
+```
+```
+"code": 200,
+"url": /static/lurennvzhu.jpg
+```
+
+## 三、日志功能
+&emsp;&emsp;日志分为4个等级：debug，info，warn和error。日志文件以XX_XX_XX的年月日形式保存，保存到工作路径的logs目录下
+
+## 四、编译运行
+- 数据库初始化
+```
+CREATE TABLE "user" (
+  "id" INTEGER PRIMARY KEY AUTOINCREMENT,
+  "user" TEXT NOT NULL,
+  "passwd" TEXT NOT NULL,
+  "time" TEXT NOT NULL
 );
+INSERT INTO "user" VALUES (1, 'root', 'root', '2024-6-3 17:13:54');
+INSERT INTO "user" VALUES (2, 'admin', 'admin', '2024-6-4 13:43:34');
+INSERT INTO "user" VALUES (3, 'imx6ull', 'imx6ull', '2024-6-5 23:49:30');
+INSERT INTO "user" VALUES (4, 'rk3588', 'rk3588', '2024-7-5 12:22:46');
 ```
-+ 配置
-	+ 在main.c中配置服务器端口号，数据库名和线程池数量
-+ 编译
-	+ 运行`make`
-	+ 新建目录`logs`
-	+ 运行`./server`
+- 编译运行
+```
+mkdir logs
+make
+./server
+```

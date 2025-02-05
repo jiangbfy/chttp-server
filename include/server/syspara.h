@@ -4,14 +4,12 @@
 #include "webserver.h"
 
 // 路径长度
-#define PATH_LEN 128
+#define PATH_LEN 512
 
 // 全局变量
 typedef struct SysPara {
     // Web服务器实例
     WebServer *server;
-    // 数据库连接池实例
-    SqlPool *sqlpool;
     // 程序路径
     char workPath[PATH_LEN];
 }SysPara;
